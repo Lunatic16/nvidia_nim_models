@@ -1,15 +1,16 @@
 <h1 align="center"><a href="https://github.com/topics/nvidia-nim">NVIDIA NIM Models<br><img height="150" alt="NVIDIA" src="https://raw.githubusercontent.com/github/explore/refs/heads/main/topics/nvidia/nvidia.png"></a></h1>
 
-Fetches and lists all available models from the Nvidia API. Useful for populating configs with the latest model IDs.
+Fetches and lists all available models from the Nvidia API. Useful for populating Hermes config.yaml with the latest model IDs.
 
 ## Key Features
 
 - **Complete Model Catalog**: Fetch all available models from the NVIDIA API with pagination support
-- **Filtering**: Filter models by type (e.g., `chat`, `embedding`) or family (e.g., `llama`, `mistral`)
+- **Filtering**: Filter models by provider (e.g., `google`, `meta`) or family (e.g., `llama`, `mistral`)
 - **Multiple Output Formats**: Table view, YAML blocks for config, or raw JSON
 - **Caching**: Local cache with 1-hour TTL to reduce API calls
 - **Colored Output**: Beautiful terminal output with colorama (optional)
 - **Export Options**: Save YAML blocks directly to files
+- **Debug Mode**: Inspect raw API response structure
 
 ## Tech Stack
 
@@ -65,18 +66,18 @@ List all available models:
 python nvidia_models.py
 ```
 
-### Filter by Model Type
+### Filter by Provider
 
-Show only chat models:
+Show only Google models:
 
 ```bash
-python nvidia_models.py --type chat
+python nvidia_models.py --type google
 ```
 
-Show only embedding models:
+Show only Meta models:
 
 ```bash
-python nvidia_models.py --type embedding
+python nvidia_models.py --type meta
 ```
 
 ### Filter by Model Family
@@ -95,10 +96,10 @@ python nvidia_models.py --family mistral
 
 ### Combined Filters
 
-Filter by both type and family:
+Filter by both provider and family:
 
 ```bash
-python nvidia_models.py --type chat --family llama
+python nvidia_models.py --type meta --family llama
 ```
 
 ### Output Formats
@@ -119,13 +120,19 @@ python nvidia_models.py --yaml-only --output models.yaml
 
 ```bash
 python nvidia_models.py --count-only
-python nvidia_models.py --type chat --count-only
+python nvidia_models.py --type google --count-only
 ```
 
 **Raw JSON dump** (for debugging or custom processing):
 
 ```bash
 python nvidia_models.py --json
+```
+
+**Debug mode** (show full JSON structure of first model):
+
+```bash
+python nvidia_models.py --debug
 ```
 
 ### Cache Management
@@ -144,13 +151,14 @@ python nvidia_models.py --no-cache
 
 | Option | Description | Example |
 |--------|-------------|---------|
-| `--type TYPE` | Filter by model type | `--type chat` |
+| `--type TYPE` | Filter by provider or model name | `--type google` |
 | `--family FAMILY` | Filter by model family | `--family llama` |
 | `--yaml-only` | Show only YAML block (no table) | `--yaml-only` |
 | `--output FILE` | Write YAML block to file | `--output models.yaml` |
 | `--count-only` | Show only model count | `--count-only` |
 | `--json` | Dump raw JSON response | `--json` |
 | `--no-cache` | Bypass local cache | `--no-cache` |
+| `--debug` | Show first model's JSON structure | `--debug` |
 | `--help` | Show help message | `--help` |
 
 ## Architecture
@@ -169,7 +177,7 @@ python nvidia_models.py --no-cache
 1. **API Key Validation**: Checks for `NVIDIA_API_KEY` environment variable
 2. **Cache Check**: Loads cached results if available and not expired (TTL: 3600s)
 3. **API Fetch**: Paginates through all NVIDIA API endpoints
-4. **Filtering**: Applies type and family filters
+4. **Filtering**: Applies provider and family filters
 5. **Output**: Displays results in table, YAML, or JSON format
 
 ### Data Flow
@@ -192,8 +200,12 @@ User Input → CLI Parser → Cache Check → API Fetch (if needed) → Filter �
 - Collects all pages into single list
 - Handles HTTP errors with helpful hints
 
+**Provider Extractor**:
+- Uses `owned_by` field from API response
+- Falls back to parsing model ID (e.g., `meta/llama-3-70b` → `meta`)
+
 **Model Family Extractor**:
-- Extracts family from `attributes.model_family` field
+- Extracts family from `attributes.model_family` field (if available)
 - Falls back to parsing model ID (e.g., `meta/llama-3-70b` → `llama`)
 
 ## Environment Variables
@@ -213,22 +225,27 @@ None. All other configuration is via CLI flags.
 ### Table Output
 
 ```
-Found 42 model(s):
+Found 138 model(s):
 
---------------------------------------------------------------------------------
-ID                                                 TYPE              FAMILY
---------------------------------------------------------------------------------
-meta/llama-3-70b-instruct                          chat              llama
-mistralai/mistral-large                            chat              mistral
-nvidia/nema-retriever-1b                           embedding         nema
-…
---------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+ID                                                 PROVIDER          FAMILY              
+-----------------------------------------------------------------------------------------
+01-ai/yi-large                                     01-ai             yi                  
+abacusai/dracarys-llama-3.1-70b-instruct           abacusai          dracarys            
+adept/fuyu-8b                                      adept             fuyu                
+google/gemma-2-2b-it                               google            gemma               
+meta/llama-3.1-70b-instruct                        meta              llama               
+mistralai/mistral-large                            mistralai         mistral             
+nvidia/llama-3.1-nemotron-70b-instruct             nvidia            llama               
+-----------------------------------------------------------------------------------------
 
 --- YAML Copy-Paste Block ---
 # NVIDIA models — paste under 'models: nvidia:' in config.yaml
-- meta/llama-3-70b-instruct
-- mistralai/mistral-large
-- nvidia/nema-retriever-1b
+- 01-ai/yi-large
+- abacusai/dracarys-llama-3.1-70b-instruct
+- adept/fuyu-8b
+- google/gemma-2-2b-it
+- meta/llama-3.1-70b-instruct
 --------------------------------------------------------------------------------
 ```
 
@@ -236,11 +253,11 @@ nvidia/nema-retriever-1b                           embedding         nema
 
 ```yaml
 # NVIDIA models — paste under 'models: nvidia:' in config.yaml
-- meta/llama-3-70b-instruct
-- meta/llama-3-8b-instruct
+- 01-ai/yi-large
+- meta/llama-3.1-70b-instruct
+- meta/llama-3.1-8b-instruct
 - mistralai/mistral-large
-- mistralai/mixtral-8x7b-instruct
-- nvidia/nema-retriever-1b
+- nvidia/llama-3.1-nemotron-70b-instruct
 ```
 
 ### JSON Output
@@ -248,11 +265,10 @@ nvidia/nema-retriever-1b                           embedding         nema
 ```json
 [
   {
-    "id": "meta/llama-3-70b-instruct",
-    "type": "chat",
-    "attributes": {
-      "model_family": "llama"
-    }
+    "id": "meta/llama-3.1-70b-instruct",
+    "object": "model",
+    "created": 735790403,
+    "owned_by": "meta"
   },
   ...
 ]
@@ -263,13 +279,14 @@ nvidia/nema-retriever-1b                           embedding         nema
 | Command | Description |
 |---------|-------------|
 | `python nvidia_models.py` | List all models (default) |
-| `python nvidia_models.py --type chat` | List chat models only |
+| `python nvidia_models.py --type google` | List Google models only |
 | `python nvidia_models.py --family llama` | List Llama family models |
 | `python nvidia_models.py --yaml-only` | Show YAML block only |
 | `python nvidia_models.py --output models.yaml` | Save YAML to file |
 | `python nvidia_models.py --count-only` | Show model count |
 | `python nvidia_models.py --json` | Dump raw JSON |
 | `python nvidia_models.py --no-cache` | Force fresh API call |
+| `python nvidia_models.py --debug` | Show debug info |
 
 ## Troubleshooting
 
@@ -356,8 +373,8 @@ Open your Hermes `config.yaml` and add the models under the NVIDIA provider:
 ```yaml
 models:
   nvidia:
-    - meta/llama-3-70b-instruct
-    - meta/llama-3-8b-instruct
+    - meta/llama-3.1-70b-instruct
+    - meta/llama-3.1-8b-instruct
     - mistralai/mistral-large
 ```
 
@@ -367,7 +384,7 @@ Now you can reference NVIDIA models in your Hermes workflows:
 
 ```yaml
 agent:
-  model: nvidia/meta/llama-3-70b-instruct
+  model: nvidia/meta/llama-3.1-70b-instruct
 ```
 
 ## Performance Considerations
@@ -406,6 +423,16 @@ This project is provided as-is for use with the NVIDIA API.
 - **Colorama**: https://pypi.org/project/colorama/
 
 ## Version History
+
+- **v1.2**: Fixed provider display, replaced TYPE column with PROVIDER
+  - Fixed: Provider now correctly shows from `owned_by` field
+  - Changed: TYPE column replaced with PROVIDER column (shows actual provider like `google`, `meta`, etc.)
+  - Changed: `--type` filter now filters by provider name or model ID
+  - Note: NVIDIA API does not provide model type (chat/embedding) in the response
+
+- **v1.1**: Type field fix and debug mode
+  - Fixed: Model type extraction from multiple field names
+  - Added: `--debug` flag to inspect raw API response structure
 
 - **v1.0**: Initial release
   - Basic model listing
