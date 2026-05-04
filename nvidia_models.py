@@ -4,20 +4,21 @@ Fetches and lists all available models from the Nvidia API.
 Useful for populating Hermes config.yaml with the latest model IDs.
 
 Requirements:
-    pip install requests
+ pip install requests
 
 Optional (for colored output):
-    pip install colorama
+ pip install colorama
 
 Usage:
-    export NVIDIA_API_KEY="nvapi-..."
-    python list_nvidia_models.py
-    python list_nvidia_models.py --type chat
-    python list_nvidia_models.py --family llama
-    python list_nvidia_models.py --yaml-only --output models.yaml
-    python list_nvidia_models.py --count-only
-    python list_nvidia_models.py --json
-    python list_nvidia_models.py --no-cache
+ export NVIDIA_API_KEY="nvapi-..."
+ python list_nvidia_models.py
+ python list_nvidia_models.py --type chat
+ python list_nvidia_models.py --family llama
+ python list_nvidia_models.py --yaml-only --output models.yaml
+ python list_nvidia_models.py --count-only
+ python list_nvidia_models.py --json
+ python list_nvidia_models.py --no-cache
+ python list_nvidia_models.py --debug
 """
 
 import os
@@ -128,9 +129,9 @@ def _handle_http_error(exc: requests.exceptions.HTTPError, response: requests.Re
     elif status == 429:
         print("Hint: Rate limited — wait a moment and try again.")
 
-
 # ── Model helpers ─────────────────────────────────────────────────────────────
 def _family(model: dict) -> str:
+    """Extract model family from attributes or parse from model ID."""
     attrs = model.get("attributes") or {}
     family = attrs.get("model_family", "") if isinstance(attrs, dict) else ""
     if not family:
@@ -142,9 +143,25 @@ def _family(model: dict) -> str:
     return family
 
 
+def _provider(model: dict) -> str:
+    """Extract provider/owner from model data."""
+    # Try owned_by field first
+    owned_by = model.get("owned_by")
+    if owned_by:
+        return str(owned_by)
+    
+    # Parse from model ID (e.g., "meta/llama-3-70b" -> "meta")
+    model_id: str = model.get("id", "")
+    if "/" in model_id:
+        return model_id.split("/")[0]
+    
+    return "unknown"
+
+
 def filter_models(models: list, type_filter: str | None, family_filter: str | None) -> list:
     if type_filter:
-        models = [m for m in models if type_filter.lower() in (m.get("type") or "").lower()]
+        # Filter by provider (owned_by) or model ID contains the filter
+        models = [m for m in models if type_filter.lower() in _provider(m).lower() or type_filter.lower() in m.get("id", "").lower()]
     if family_filter:
         models = [m for m in models if family_filter.lower() in _family(m).lower()]
     return models
@@ -162,19 +179,19 @@ def print_table(models: list) -> None:
     print(f"\n{Fore.GREEN}Found {len(models)} model(s):{Style.RESET_ALL}\n")
     print(DIVIDER)
     header = (
-        f"{Fore.YELLOW}{'ID':<{COL_ID}} {'TYPE':<{COL_TYPE}} {'FAMILY':<{COL_FAMILY}}{Style.RESET_ALL}"
+        f"{Fore.YELLOW}{'ID':<{COL_ID}} {'PROVIDER':<{COL_TYPE}} {'FAMILY':<{COL_FAMILY}}{Style.RESET_ALL}"
     )
     print(header)
     print(DIVIDER)
 
     for model in models:
         model_id: str = model.get("id", "unknown")
-        model_type: str = model.get("type", "unknown")
+        provider: str = _provider(model)
         family: str = _family(model)
 
         # Truncate long IDs with ellipsis so the table stays aligned
         display_id = model_id if len(model_id) <= COL_ID else model_id[: COL_ID - 1] + "…"
-        print(f"{display_id:<{COL_ID}} {model_type:<{COL_TYPE}} {family:<{COL_FAMILY}}")
+        print(f"{display_id:<{COL_ID}} {provider:<{COL_TYPE}} {family:<{COL_FAMILY}}")
 
     print(DIVIDER)
 
@@ -185,6 +202,15 @@ def build_yaml_block(models: list) -> str:
         model_id = model.get("id", "unknown")
         lines.append(f"- {model_id}")
     return "\n".join(lines)
+
+
+def print_debug_info(models: list) -> None:
+    """Print first model's full structure for debugging."""
+    if not models:
+        return
+    print(f"\n{Fore.CYAN}=== Debug: First Model Structure ==={Style.RESET_ALL}")
+    print(json.dumps(models[0], indent=2))
+    print(f"{Fore.CYAN}====================================={Style.RESET_ALL}\n")
 
 
 def print_yaml_block(models: list) -> None:
@@ -206,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--type", metavar="TYPE", help="Filter by model type (e.g. chat, embedding)")
+    p.add_argument("--type", metavar="TYPE", help="Filter by provider or model name (e.g. google, meta, llama)")
     p.add_argument("--family", metavar="FAMILY", help="Filter by model family (e.g. llama, mistral)")
     p.add_argument(
         "--yaml-only",
@@ -229,6 +255,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-cache",
         action="store_true",
         help="Bypass the local cache and always hit the API",
+    )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print first model's full JSON structure for debugging",
     )
     return p
 
@@ -288,6 +319,10 @@ def main() -> None:
     if not models:
         print("No models matched your filters.")
         return
+
+    # Debug: show first model structure
+    if args.debug:
+        print_debug_info(models)
 
     # Output
     yaml_block = build_yaml_block(models)
