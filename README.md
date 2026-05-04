@@ -1,4 +1,4 @@
-# NVIDIA Models CLI
+<h1 align="center"><a href="https://github.com/topics/nvidia">NVIDIA NIM Models<br><img height="150" alt="NVIDIA" src="https://raw.githubusercontent.com/github/explore/refs/heads/main/topics/nvidia/nvidia.png"></a></h1>
 
 Fetches and lists all available models from the Nvidia API. Useful for populating configs with the latest model IDs.
 
