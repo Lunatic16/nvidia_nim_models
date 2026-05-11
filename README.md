@@ -345,13 +345,6 @@ Your API key may not have the required permissions. Check NGC dashboard for acce
 
 ---
 
-## Related Documentation
-
-- [Main Documentation](../README.md)
-- [API Reference](../reference/endpoints.md)
-- [Models Catalog](../models/README.md)
-- [Getting Started Guide](../guides/getting-started.md)
-
 ## License
 
 NVIDIA AI Enterprise EULA - https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/
