@@ -1,339 +1,417 @@
 #!/usr/bin/env python3
 """
-Fetches and lists all available models from the Nvidia API.
-Useful for populating Hermes config.yaml with the latest model IDs.
+NVIDIA NIM API - List Available Models (Live API)
+
+Retrieves and displays all available models from the NVIDIA NIM API
+in a formatted table by querying the live API endpoint.
 
 Requirements:
- pip install requests
-
-Optional (for colored output):
- pip install colorama
+    pip install requests tabulate
 
 Usage:
- export NVIDIA_API_KEY="nvapi-..."
- python list_nvidia_models.py
- python list_nvidia_models.py --type chat
- python list_nvidia_models.py --family llama
- python list_nvidia_models.py --yaml-only --output models.yaml
- python list_nvidia_models.py --count-only
- python list_nvidia_models.py --json
- python list_nvidia_models.py --no-cache
- python list_nvidia_models.py --debug
+    export NVIDIA_API_KEY="nvapi-xxx"
+    python list_models_api.py
+    python list_models_api.py --output markdown  # table, markdown, json
+    python list_models_api.py --filter meta     # Filter by provider
 """
 
 import os
 import sys
-import json
-import time
 import argparse
-import pathlib
-import requests
+import json
+import re
+from typing import Optional, List, Dict, Any
 
-# ── Optional colorama ─────────────────────────────────────────────────────────
 try:
-    from colorama import init as colorama_init, Fore, Style
-    colorama_init(autoreset=True)
-    COLOR = True
+    import requests
 except ImportError:
-    COLOR = False
+    print("Installing missing dependency: requests")
+    os.system("pip install requests")
+    import requests
 
-    class _Noop:
-        def __getattr__(self, _):
-            return ""
-
-    Fore = Style = _Noop()
-
-# ── Cache config ──────────────────────────────────────────────────────────────
-CACHE_FILE = pathlib.Path(".nvidia_models_cache.json")
-CACHE_TTL = 3600  # seconds (1 hour)
-
-NVIDIA_MODELS_BASE_URL = "https://integrate.api.nvidia.com/v1/models"
+try:
+    from tabulate import tabulate
+    HAS_TABULATE = True
+except ImportError:
+    HAS_TABULATE = False
 
 
-# ── Cache helpers ─────────────────────────────────────────────────────────────
-def load_cache() -> list | None:
-    """Return cached model list if fresh, else None."""
-    if not CACHE_FILE.exists():
-        return None
-    try:
-        data = json.loads(CACHE_FILE.read_text())
-        age = time.time() - data.get("ts", 0)
-        if age < CACHE_TTL:
-            remaining = int(CACHE_TTL - age)
-            print(
-                f"{Fore.CYAN}Using cached results "
-                f"(expires in {remaining}s). Pass --no-cache to refresh.{Style.RESET_ALL}"
-            )
-            return data["models"]
-    except (json.JSONDecodeError, KeyError):
-        pass
-    return None
+# Enhanced metadata with fallbacks
+MODEL_METADATA = {
+    # Meta models
+    "meta/llama-3.1-8b-instruct": {"description": "Llama 3.1 8B Instruct", "context": "128K", "use_case": "General purpose, fast inference"},
+    "meta/llama-3.1-70b-instruct": {"description": "Llama 3.1 70B Instruct", "context": "128K", "use_case": "Complex reasoning, high quality"},
+    "meta/llama-3.2-1b-instruct": {"description": "Llama 3.2 1B Instruct", "context": "128K", "use_case": "Edge devices, ultra-low latency"},
+    "meta/llama-3.2-3b-instruct": {"description": "Llama 3.2 3B Instruct", "context": "128K", "use_case": "Mobile, low-resource"},
+    "meta/llama-3.3-70b-instruct": {"description": "Llama 3.3 70B Instruct", "context": "128K", "use_case": "Latest Llama, optimized"},
+    # MistralAI
+    "mistralai/mistral-7b-instruct-v0.3": {"description": "Mistral 7B Instruct v0.3", "context": "32K", "use_case": "Efficient general purpose"},
+    "mistralai/mixtral-8x7b-instruct": {"description": "Mixtral 8x7B MoE", "context": "32K", "use_case": "Balanced performance"},
+    "mistralai/mixtral-8x22b-instruct": {"description": "Mixtral 8x22B MoE", "context": "64K", "use_case": "High-end reasoning"},
+    # Microsoft
+    "microsoft/phi-4-mini-instruct": {"description": "Phi-4 Mini Instruct", "context": "16K", "use_case": "Compact, efficient"},
+    "microsoft/phi-4-mini-flash-reasoning": {"description": "Phi-4 Mini Flash Reasoning", "context": "16K", "use_case": "Fast reasoning tasks"},
+    # Google
+    "google/gemma-7b": {"description": "Gemma 7B Base", "context": "8K", "use_case": "Base model for fine-tuning"},
+    "google/gemma-2-2b-it": {"description": "Gemma 2 2B Instruct", "context": "8K", "use_case": "Lightweight chat"},
+    "google/codegemma-7b": {"description": "CodeGemma 7B", "context": "8K", "use_case": "Code generation"},
+    # NVIDIA
+    "nvidia/nemotron-mini-4b-instruct": {"description": "Nemotron Mini 4B", "context": "32K", "use_case": "Compact instruction following"},
+    "nvidia/llama-3.1-nemotron-nano-8b-v1": {"description": "Nemotron Nano 8B", "context": "128K", "use_case": "Optimized Llama variant"},
+    # DeepSeek
+    "deepseek-ai/deepseek-v4-flash": {"description": "DeepSeek V4 Flash", "context": "128K", "use_case": "Fast inference"},
+    "deepseek-ai/deepseek-v4-pro": {"description": "DeepSeek V4 Pro", "context": "128K", "use_case": "High quality"},
+    # Qwen
+    "qwen/qwen2.5-coder-7b-instruct": {"description": "Qwen2.5 Coder 7B", "context": "32K", "use_case": "Code generation"},
+    "qwen/qwen3-coder-480b-a35b-instruct": {"description": "Qwen3 Coder 480B", "context": "256K", "use_case": "Advanced coding"},
+    # ByteDance
+    "bytedance/seed-oss-36b-instruct": {"description": "Seed OSS 36B", "context": "32K", "use_case": "Open source large model"},
+    # AbacusAI
+    "abacusai/dracarys-llama-3.1-70b-instruct": {"description": "Dracarys Llama 3.1 70B", "context": "128K", "use_case": "Enhanced Llama variant"},
+}
 
 
-def save_cache(models: list) -> None:
-    try:
-        CACHE_FILE.write_text(json.dumps({"ts": time.time(), "models": models}))
-    except OSError:
-        pass  # Non-fatal: cache write failure is ignorable
+def get_api_key() -> str:
+    """Get API key from environment."""
+    api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key:
+        print("Error: NVIDIA_API_KEY environment variable not set")
+        print("Set it with: export NVIDIA_API_KEY='nvapi-xxx'")
+        print("\nGet your API key from: https://ngc.nvidia.com")
+        sys.exit(1)
+    return api_key
 
 
-# ── API fetch (with pagination) ───────────────────────────────────────────────
-def fetch_all_models(api_key: str) -> list:
-    """Fetch every page of models from the NVIDIA API."""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
+def parse_model_id(model_id: str) -> Dict[str, str]:
+    """Parse model ID to extract provider, name, and size info."""
+    parts = model_id.split("/")
+    provider = parts[0] if parts else "unknown"
+    name = parts[1] if len(parts) > 1 else model_id
+
+    # Extract size pattern (e.g., "70b", "8b", "480b")
+    size_match = re.search(r'(\d+(?:\.\d+)?)(?:b|b-instruct|instruct)', name.lower())
+    size = size_match.group(0).upper() if size_match else ""
+
+    # Extract context from name patterns
+    context = ""
+    if "coder" in name.lower():
+        context = "Code generation"
+    elif "vision" in name.lower() or "multimodal" in name.lower():
+        context = "Multimodal"
+    elif "embed" in name.lower():
+        context = "Embedding"
+    elif "guard" in name.lower() or "safety" in name.lower():
+        context = "Safety/Guardrails"
+    elif "reason" in name.lower() or "thinking" in name.lower():
+        context = "Reasoning"
+    elif "translate" in name.lower():
+        context = "Translation"
+    elif "chat" in name.lower() or "instruct" in name.lower():
+        context = "Chat/Instruct"
+
+    return {
+        "provider": provider,
+        "name": name,
+        "size": size,
+        "context_type": context
     }
 
-    models: list = []
-    url: str | None = NVIDIA_MODELS_BASE_URL
-    page = 1
 
-    while url:
-        print(f"Fetching page {page}: {url} ...")
-        try:
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as exc:
-            _handle_http_error(exc, response)
-            sys.exit(1)
-        except requests.exceptions.RequestException as exc:
-            print(f"{Fore.RED}Request failed: {exc}{Style.RESET_ALL}")
-            sys.exit(1)
+def fetch_models(api_key: str) -> List[Dict]:
+    """Fetch available models from NVIDIA API."""
+    url = "https://integrate.api.nvidia.com/v1/models"
 
-        data = response.json()
-        page_models = data.get("data", [])
-        models.extend(page_models)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json"
+    }
 
-        # Advance to next page if the API signals one.
-        # Adjust field name to match whatever the real NVIDIA pagination envelope uses.
-        url = data.get("next_page_url") or data.get("next") or None
-        page += 1
-
-    return models
-
-
-def _handle_http_error(exc: requests.exceptions.HTTPError, response: requests.Response) -> None:
-    print(f"{Fore.RED}HTTP Error: {exc}{Style.RESET_ALL}")
     try:
-        body = response.text
-    except Exception:
-        body = "<no body>"
-    print(f"Response body: {body}")
-    status = getattr(response, "status_code", None)
-    if status == 401:
-        print("Hint: Your API key may be invalid or expired.")
-    elif status == 403:
-        print("Hint: Your account may not have access to the model catalog endpoint.")
-    elif status == 429:
-        print("Hint: Rate limited — wait a moment and try again.")
-
-# ── Model helpers ─────────────────────────────────────────────────────────────
-def _family(model: dict) -> str:
-    """Extract model family from attributes or parse from model ID."""
-    attrs = model.get("attributes") or {}
-    family = attrs.get("model_family", "") if isinstance(attrs, dict) else ""
-    if not family:
-        model_id: str = model.get("id", "")
-        if "/" in model_id:
-            parts = model_id.split("/")
-            if len(parts) > 1:
-                family = parts[1].split("-")[0]
-    return family
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("data", [])
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP Error: {e}")
+        if e.response is not None:
+            print(f"Status Code: {e.response.status_code}")
+            print(f"Response: {e.response.text}")
+            if e.response.status_code == 401:
+                print("\nAuthentication failed. Check your API key.")
+            elif e.response.status_code == 403:
+                print("\nAccess denied. Verify your API key has 'AI Foundation Models and Endpoints' access.")
+        sys.exit(1)
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching models: {e}")
+        sys.exit(1)
 
 
-def _provider(model: dict) -> str:
-    """Extract provider/owner from model data."""
-    # Try owned_by field first
-    owned_by = model.get("owned_by")
-    if owned_by:
-        return str(owned_by)
-    
-    # Parse from model ID (e.g., "meta/llama-3-70b" -> "meta")
-    model_id: str = model.get("id", "")
-    if "/" in model_id:
-        return model_id.split("/")[0]
-    
-    return "unknown"
+def extract_context_from_name(name: str) -> str:
+    """Extract context window size from model name if present."""
+    # Patterns like "128k", "32k", "256k"
+    match = re.search(r'(\d+)k(?:-|\s|$|\.|\))', name.lower())
+    if match:
+        return f"{match.group(1)}K"
+    return ""
 
 
-def filter_models(models: list, type_filter: str | None, family_filter: str | None) -> list:
-    if type_filter:
-        # Filter by provider (owned_by) or model ID contains the filter
-        models = [m for m in models if type_filter.lower() in _provider(m).lower() or type_filter.lower() in m.get("id", "").lower()]
-    if family_filter:
-        models = [m for m in models if family_filter.lower() in _family(m).lower()]
-    return models
+def generate_description(model_id: str, model_data: Dict) -> str:
+    """Generate a description from model ID and data."""
+    parsed = parse_model_id(model_id)
+    name = parsed["name"]
+
+    # Check known metadata first
+    if model_id in MODEL_METADATA:
+        return MODEL_METADATA[model_id]["description"]
+
+    # Generate from name patterns
+    parts = name.replace("-", " ").replace("_", " ").split()
+
+    # Build description from parts
+    description_parts = []
+
+    # Add provider name for clarity
+    if parsed["provider"]:
+        description_parts.append(parsed["provider"].capitalize())
+
+    # Add model family
+    if "llama" in name.lower():
+        if "3.3" in name.lower():
+            description_parts = ["Llama 3.3"]
+        elif "3.2" in name.lower():
+            description_parts = ["Llama 3.2"]
+        elif "3.1" in name.lower():
+            description_parts = ["Llama 3.1"]
+        elif "3" in name.lower():
+            description_parts = ["Llama 3"]
+        elif "guard" in name.lower():
+            description_parts = ["Llama Guard"]
+
+    if "nemotron" in name.lower():
+        if "nano" in name.lower():
+            description_parts = ["Nemotron Nano"]
+        elif "mini" in name.lower():
+            description_parts = ["Nemotron Mini"]
+        elif "super" in name.lower():
+            description_parts = ["Nemotron Super"]
+        elif "ultra" in name.lower():
+            description_parts = ["Nemotron Ultra"]
+        else:
+            description_parts = ["Nemotron"]
+
+    if "gemma" in name.lower():
+        if "code" in name.lower():
+            description_parts = ["CodeGemma"]
+        else:
+            description_parts = ["Gemma"]
+
+    if "phi" in name.lower():
+        description_parts = ["Phi"]
+
+    if "mistral" in name.lower() or "mixtral" in name.lower():
+        description_parts = [" ".join(name.replace("-", " ").replace("_", " ").title().split()[:3])]
+
+    if "qwen" in name.lower():
+        description_parts = ["Qwen"]
+
+    if "deepseek" in name.lower():
+        description_parts = ["DeepSeek"]
+
+    # Add type indicators
+    if "instruct" in name.lower() or "chat" in name.lower():
+        description_parts.append("Instruct")
+    elif "embed" in name.lower():
+        description_parts.append("Embedding")
+    elif "coder" in name.lower() or "code" in name.lower():
+        description_parts.append("Code")
+    elif "vision" in name.lower() or "vl" in name.lower():
+        description_parts.append("Vision")
+    elif "guard" in name.lower() or "safety" in name.lower():
+        description_parts.append("Safety")
+    elif "reason" in name.lower() or "thinking" in name.lower():
+        description_parts.append("Reasoning")
+    elif "translate" in name.lower():
+        description_parts.append("Translation")
+
+    # If we have parts, join them
+    if description_parts:
+        return " ".join(description_parts)
+
+    # Fallback: capitalize the model name
+    return name.replace("-", " ").replace("_", " ").title()
 
 
-# ── Output helpers ────────────────────────────────────────────────────────────
-COL_ID = 50
-COL_TYPE = 15
-COL_FAMILY = 20
+def generate_use_case(model_id: str, model_data: Dict) -> str:
+    """Generate use case from model characteristics."""
+    name = model_id.lower()
 
-DIVIDER = "-" * (COL_ID + COL_TYPE + COL_FAMILY + 4)
+    # Check known metadata first
+    if model_id in MODEL_METADATA:
+        return MODEL_METADATA[model_id]["use_case"]
+
+    # Determine use case from patterns
+    if any(x in name for x in ["coder", "code", "codellama", "codegemma"]):
+        return "Code generation"
+    elif "embed" in name:
+        return "Text embedding"
+    elif "vision" in name or "vl" in name or "multimodal" in name:
+        return "Multimodal (vision + text)"
+    elif "guard" in name or "safety" in name:
+        return "Content safety / Guardrails"
+    elif "reason" in name or "thinking" in name:
+        return "Complex reasoning"
+    elif "translate" in name:
+        return "Translation"
+    elif "recruit" in name or "rerank" in name:
+        return "Reranking / Search"
+    elif "instruct" in name or "chat" in name:
+        # Check size for tier
+        if any(x in name for x in ["70b", "80b", "90b", "120b", "253b", "480b"]):
+            return "High-quality chat / Complex tasks"
+        elif any(x in name for x in ["1b", "2b", "3b", "4b", "7b", "8b"]):
+            return "Fast inference / General chat"
+        else:
+            return "General purpose chat"
+    elif "nemoretriever" in name or "retriever" in name:
+        return "RAG / Retrieval"
+    elif "parse" in name:
+        return "Document parsing"
+    else:
+        return "General purpose"
 
 
-def print_table(models: list) -> None:
-    print(f"\n{Fore.GREEN}Found {len(models)} model(s):{Style.RESET_ALL}\n")
-    print(DIVIDER)
-    header = (
-        f"{Fore.YELLOW}{'ID':<{COL_ID}} {'PROVIDER':<{COL_TYPE}} {'FAMILY':<{COL_FAMILY}}{Style.RESET_ALL}"
-    )
-    print(header)
-    print(DIVIDER)
+def enrich_model(model: Dict) -> Dict:
+    """Add metadata to model info."""
+    model_id = model.get("id", "")
+    metadata = MODEL_METADATA.get(model_id, {})
+    parsed = parse_model_id(model_id)
 
-    for model in models:
-        model_id: str = model.get("id", "unknown")
-        provider: str = _provider(model)
-        family: str = _family(model)
+    # Get description from metadata or generate
+    description = metadata.get("description") or generate_description(model_id, model)
 
-        # Truncate long IDs with ellipsis so the table stays aligned
-        display_id = model_id if len(model_id) <= COL_ID else model_id[: COL_ID - 1] + "…"
-        print(f"{display_id:<{COL_ID}} {provider:<{COL_TYPE}} {family:<{COL_FAMILY}}")
+    # Get context window
+    context = metadata.get("context", "")
+    if not context:
+        # Try to extract from model name
+        context = extract_context_from_name(model_id)
+        if not context:
+            # Use heuristics based on model family
+            if "llama-3" in model_id.lower() or "nemotron" in model_id.lower():
+                context = "128K"  # Most modern Llama models
+            elif "gemma" in model_id.lower():
+                context = "8K"
+            elif "phi-4" in model_id.lower():
+                context = "16K"
+            elif "mistral" in model_id.lower() or "mixtral" in model_id.lower():
+                context = "32K"
+            elif "qwen3" in model_id.lower():
+                context = "256K"
+            elif "deepseek" in model_id.lower():
+                context = "128K"
 
-    print(DIVIDER)
+    return {
+        "model": model_id,
+        "description": description,
+        "context": context if context else "N/A",
+        "use_case": generate_use_case(model_id, model),
+        "provider": parsed["provider"],
+        "size": parsed.get("size", ""),
+    }
 
 
-def build_yaml_block(models: list) -> str:
-    lines = ["# NVIDIA models — paste under 'models: nvidia:' in config.yaml"]
-    for model in models:
-        model_id = model.get("id", "unknown")
-        lines.append(f"- {model_id}")
+def filter_models(models: List[Dict], provider: Optional[str] = None) -> List[Dict]:
+    """Filter models by provider."""
+    if not provider:
+        return models
+
+    return [m for m in models if provider.lower() in m.get("model", "").lower()]
+
+
+def format_markdown_table(models: List[Dict]) -> str:
+    """Format as Markdown table."""
+    if not models:
+        return "No models found"
+
+    lines = []
+    lines.append("| Model | Description | Context | Use Case |")
+    lines.append("|-------|-------------|---------|----------|")
+    for m in models:
+        lines.append(f"| {m['model']} | {m['description']} | {m['context']} | {m['use_case']} |")
     return "\n".join(lines)
 
 
-def print_debug_info(models: list) -> None:
-    """Print first model's full structure for debugging."""
+def format_ascii_table(models: List[Dict]) -> str:
+    """Format as ASCII table."""
     if not models:
-        return
-    print(f"\n{Fore.CYAN}=== Debug: First Model Structure ==={Style.RESET_ALL}")
-    print(json.dumps(models[0], indent=2))
-    print(f"{Fore.CYAN}====================================={Style.RESET_ALL}\n")
+        return "No models found"
+
+    if HAS_TABULATE:
+        table_data = [[m['model'], m['description'], m['context'], m['use_case']] for m in models]
+        return tabulate(table_data, headers=["Model", "Description", "Context", "Use Case"], tablefmt="grid")
+    else:
+        # Fallback: simple pipe format
+        lines = []
+        lines.append(f"| {'Model':<50} | {'Description':<40} | {'Context':<10} | {'Use Case'}")
+        lines.append("|" + "-"*52 + "|" + "-"*42 + "|" + "-"*12 + "|" + "-"*40)
+        for m in models:
+            lines.append(f"| {m['model']:<50} | {m['description']:<40} | {m['context']:<10} | {m['use_case']}")
+        return "\n".join(lines)
 
 
-def print_yaml_block(models: list) -> None:
-    print(f"\n{Fore.CYAN}--- YAML Copy-Paste Block ---{Style.RESET_ALL}")
-    print(build_yaml_block(models))
-    print(f"{Fore.CYAN}{DIVIDER}{Style.RESET_ALL}")
+def format_json_output(models: List[Dict]) -> str:
+    """Format as JSON."""
+    return json.dumps(models, indent=2)
 
 
-def write_output(content: str, path: str) -> None:
-    out = pathlib.Path(path)
-    out.write_text(content)
-    print(f"{Fore.GREEN}Written to {out.resolve()}{Style.RESET_ALL}")
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="List NVIDIA API models and generate config.yaml snippets.",
+def main():
+    parser = argparse.ArgumentParser(
+        description="List NVIDIA NIM API models (live from API)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    p.add_argument("--type", metavar="TYPE", help="Filter by provider or model name (e.g. google, meta, llama)")
-    p.add_argument("--family", metavar="FAMILY", help="Filter by model family (e.g. llama, mistral)")
-    p.add_argument(
-        "--yaml-only",
-        action="store_true",
-        help="Print only the YAML block (suppresses table)",
-    )
-    p.add_argument("--output", metavar="FILE", help="Write YAML block to this file")
-    p.add_argument(
-        "--count-only",
-        action="store_true",
-        help="Print only the model count and exit",
-    )
-    p.add_argument(
-        "--json",
-        dest="dump_json",
-        action="store_true",
-        help="Dump raw API response as JSON (ignores filters)",
-    )
-    p.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Bypass the local cache and always hit the API",
-    )
-    p.add_argument(
-        "--debug",
-        action="store_true",
-        help="Print first model's full JSON structure for debugging",
-    )
-    return p
+        epilog="""
+Examples:
+  python list_models_api.py                 # Show all models
+  python list_models_api.py -f meta         # Filter by Meta models
+  python list_models_api.py -o markdown     # Output as Markdown
+  python list_models_api.py -c              # Show count only
+  python list_models_api.py -o json         # Output as JSON
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-def main() -> None:
-    parser = build_parser()
+Get your API key from: https://ngc.nvidia.com
+        """
+    )
+    parser.add_argument("--output", "-o", choices=["table", "markdown", "json"], default="table",
+                       help="Output format (default: table)")
+    parser.add_argument("--filter", "-f", type=str, help="Filter by provider (e.g., 'meta', 'google', 'microsoft')")
+    parser.add_argument("--count", "-c", action="store_true", help="Show only count")
     args = parser.parse_args()
 
-    # API key
-    api_key = os.getenv("NVIDIA_API_KEY")
-    if not api_key:
-        print(
-            f"{Fore.RED}Error: NVIDIA_API_KEY environment variable not set.\n"
-            f"Please run: export NVIDIA_API_KEY='nvapi-...'{Style.RESET_ALL}"
-        )
-        sys.exit(1)
+    # Get API key
+    api_key = get_api_key()
 
-    # Fetch (with optional cache)
-    models: list | None = None
-    if not args.no_cache and not args.dump_json:
-        models = load_cache()
+    # Fetch models from API
+    models_raw = fetch_models(api_key)
 
-    if models is None:
-        models = fetch_all_models(api_key)
-        if not args.dump_json:
-            save_cache(models)
+    # Enrich with metadata and generated info
+    models = [enrich_model(m) for m in models_raw]
 
-    if not models:
-        print("No models found. Check your API key permissions.")
+    # Filter by provider if specified
+    if args.filter:
+        models = filter_models(models, args.filter)
+
+    # Sort by provider then model name
+    models.sort(key=lambda x: (x['provider'], x['model']))
+
+    # Count only
+    if args.count:
+        print(len(models))
         return
 
-    # --json: dump raw and exit
-    if args.dump_json:
-        print(json.dumps(models, indent=2))
-        return
-
-    # Sort
-    models.sort(key=lambda x: x.get("id", ""))
-
-    # --count-only (before filtering so you see total)
-    if args.count_only:
-        filtered = filter_models(models, args.type, args.family)
-        scope = "total"
-        if args.type or args.family:
-            parts = []
-            if args.type:
-                parts.append(f"type={args.type}")
-            if args.family:
-                parts.append(f"family={args.family}")
-            scope = ", ".join(parts)
-        print(f"{len(filtered)} model(s) [{scope}]")
-        return
-
-    # Filter
-    models = filter_models(models, args.type, args.family)
-    if not models:
-        print("No models matched your filters.")
-        return
-
-    # Debug: show first model structure
-    if args.debug:
-        print_debug_info(models)
-
-    # Output
-    yaml_block = build_yaml_block(models)
-
-    if not args.yaml_only:
-        print_table(models)
-
-    if args.output:
-        write_output(yaml_block, args.output)
+    # Format and output
+    if args.output == "json":
+        print(format_json_output(models))
+    elif args.output == "markdown":
+        print(format_markdown_table(models))
     else:
-        print_yaml_block(models)
+        print(format_ascii_table(models))
 
 
 if __name__ == "__main__":
