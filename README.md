@@ -9,7 +9,6 @@ Utility scripts for interacting with the NVIDIA NIM API.
 ## Table of Contents
 
 - [list_models_api.py](#list_models_api) - Live API model listing with metadata extraction
-- [list_models.py](#list_models) - Offline model catalog reference
 - [Installation](#installation)
 - [Usage Examples](#usage-examples)
 
